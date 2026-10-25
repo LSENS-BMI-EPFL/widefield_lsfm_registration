@@ -1,0 +1,7 @@
+# Python 3.9 (tested with 3.9.23)
+numpy==1.26.3
+scipy==1.13.1
+scikit-image==0.22.0
+opencv-python==4.11.0.86
+tifffile==2024.8.30
+matplotlib==3.7.2

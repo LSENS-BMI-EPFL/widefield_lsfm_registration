@@ -1,0 +1,16 @@
+# outputs and working data (not part of the code release)
+results/
+figures/
+logs/
+archive/
+cache/
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
