@@ -26,6 +26,7 @@ $P finalize.py $B $RES/$B/local.json affine
 echo "== figure panels"
 $P make_figure.py $B
 echo "== standard atlas space"
-$P atlas_space.py $B
+ALL=$(ls $RES/*_transform.json | xargs -n1 basename | sed 's/_transform.json//')   # every brain with results,
+$P atlas_space.py $ALL                                                              # so the all-brains overlay is complete
 echo "== layer-5 borders"
 $P l5_boundaries.py $B
