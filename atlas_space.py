@@ -166,7 +166,7 @@ def main(brains):
         mm_disp[..., 2] = (shape[1] - 1) * RES_MM - mm[..., 2]                   # same left/right flip as the map
         stim, foot = to_dorsal(d, mm_disp, region, shape)
         ves, _ = to_dorsal(flat, mm_disp, region, shape)
-        np.savez(f"{C.RESULTS}/{b}_perens_dorsal.npz", stim_minus_nostim=stim, vessels_flatfield=ves, footprint=foot,
+        np.savez(f"{C.RESULTS}/{b}_perens_dorsal.npz", stim_response=stim, vessels_flatfield=ves, footprint=foot,
                  atlas_dorsal_labels=lab, atlas_dorsal_areas=areas, note="dorsal view of perens_lsfm_mouse_20um, rows = a (anterior up), columns = r flipped so the "
                       "animal's left is on the left (column c = atlas r index 460 - c), 20 um px")
         res[b] = dict(stim=stim, ves=ves, foot=foot, agree=agree)
@@ -185,7 +185,7 @@ def main(brains):
     ax = np.atleast_2d(ax)
     for j, b in enumerate(brains):
         r = res[b]
-        for i, (key, cmap, title) in enumerate((("stim", "inferno", "stim − no stim"), ("ves", "gray", "widefield vessels"))):
+        for i, (key, cmap, title) in enumerate((("stim", "inferno", "stim response, baseline-corrected"), ("ves", "gray", "widefield vessels"))):
             img = base()
             v = r[key]
             m = np.isfinite(v)

@@ -26,6 +26,7 @@ import register as R  # noqa: E402
 import surface as S  # noqa: E402
 import validate as V  # noqa: E402
 import make_figure as MF  # noqa: E402
+import enhance  # noqa: E402
 
 MAX_DEPTH_VOX = 60          # search L5 down to ~1.5 mm along the ray
 STEP_VOX = 0.5
@@ -74,12 +75,13 @@ def to_widefield(L, A):
     return u[R.warp(inv.reshape(L.shape).astype(np.float32), np.array(A), interp=cv2.INTER_NEAREST).astype(int)]
 
 
-def bfd_stats(L, d):
+def bfd_stats(L, d, win):
+    """Response in the window only (as validate.evaluate)."""
     bfd = np.isin(L, V.BFD)
-    py, px = np.unravel_index(np.argmax(d), d.shape)
+    py, px = np.unravel_index(np.argmax(np.where(win, d, -np.inf)), d.shape)
     return dict(peak_region=V.NAMES.get(V.area_id(int(L[py, px])), str(L[py, px])),
-                top1pct_in_bfd=float(bfd[d >= np.percentile(d, 99)].mean()),
-                halfmax_in_bfd=float(bfd[d >= 0.5 * d.max()].mean()))
+                top1pct_in_bfd=float(bfd[win & (d >= np.percentile(d[win], 99))].mean()),
+                halfmax_in_bfd=float(bfd[win & (d >= 0.5 * d[win].max())].mean()))
 
 
 def main(brain, transform=None):
@@ -130,11 +132,12 @@ def main(brain, transform=None):
     lines["e2_surface_vs_L5_borders"] = [(outline, "k", MF.LW)]
 
     d = V.hotspot(brain)
+    win = enhance.window_mask(brain, d.shape, display=True)
     v = np.percentile(np.abs(d), 99.5)
     f = plt.get_cmap("RdBu_r")((np.clip(d / v, -1, 1) + 1) / 2)[..., :3]
     f[d5] = 0
-    panels["f_stim_minus_nostim_atlas_L5"] = f
-    lines["f_stim_minus_nostim_atlas_L5"] = [(outline, "k", MF.LW)]
+    panels["f_stim_response_atlas_L5"] = f
+    lines["f_stim_response_atlas_L5"] = [(outline, "k", MF.LW)]
 
     lgr = np.log(np.maximum(raw, 1))
     flat = lgr - ndi.gaussian_filter(lgr, 10)
@@ -167,11 +170,11 @@ def main(brain, transform=None):
                  # widefield px size from the fitted affine (projection px = VOX_UM)
                  border_shift_um_median=float(np.median(shift_px) * V.VOX_UM / np.sqrt(abs(np.linalg.det(A[:, :2])))),
                  border_shift_px_median=float(np.median(shift_px)), border_shift_px_p90=float(np.percentile(shift_px, 90)),
-                 surface=bfd_stats(Ls, d), L5=bfd_stats(L5f, d))
+                 surface=bfd_stats(Ls, d, win), L5=bfd_stats(L5f, d, win))
     json.dump(stats, open(f"{out}/stats.json", "w"), indent=1)
 
     fig, axs = plt.subplots(1, 4, figsize=(20, 5))
-    for ax, k in zip(axs, ["e2_surface_vs_L5_borders", "e_atlas_L5_on_widefield", "f_stim_minus_nostim_atlas_L5",
+    for ax, k in zip(axs, ["e2_surface_vs_L5_borders", "e_atlas_L5_on_widefield", "f_stim_response_atlas_L5",
                            "h_activity_vessels_atlas_L5_reference_view"]):
         ax.imshow(panels[k]); MF.draw_lines(ax, [(P, c, lw * 0.6) for P, c, lw in lines[k]])
         ax.set_title(k.replace("_", " "), fontsize=9); ax.axis("off")

@@ -208,12 +208,12 @@ def main(brain, transform=None, tag=""):
     rgb[ed] = CYAN
     panels["e_atlas_on_widefield"] = (rgb, None, [(outline, CYAN, LW)])
 
-    # f: stim - no stim (1.00-1.15 s), atlas edges in black
+    # f: baseline-corrected stim response (1.00-1.15 s minus 0.50-1.00 s), atlas edges in black
     d = V.hotspot(brain)
     v = np.percentile(np.abs(d), 99.5)
     cm = plt.get_cmap("RdBu_r")((np.clip(d / v, -1, 1) + 1) / 2)[..., :3]
     cm[ed] = 0
-    panels["f_stim_minus_nostim_atlas"] = (cm, None, [(outline, "k", LW)])
+    panels["f_stim_response_atlas"] = (cm, None, [(outline, "k", LW)])
 
     # g/h: reference-style views (rot90: medial right, lateral left), cropped to the outline region.
     # g: atlas on widefield vessels; h: stim map (inferno) with widefield vessels and atlas.
@@ -269,7 +269,7 @@ def main(brain, transform=None, tag=""):
     # composite preview
     order = ["a1_lsfm_dorsal_mip", "a2_surface_vessels_depth_stacked", "a3_lsfm_vessel_projection", "c_vessel_alignment",
              "e_atlas_on_widefield", "b1_widefield_raw", "b2_widefield_frangi", "b3_widefield_vessel_mask",
-             None, "f_stim_minus_nostim_atlas"]
+             None, "f_stim_response_atlas"]
     fig, axs = plt.subplots(2, 5, figsize=(17, 7))
     for ax, k in zip(axs.ravel(), order):
         if k is None:

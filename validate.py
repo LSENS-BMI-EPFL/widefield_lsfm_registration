@@ -1,7 +1,7 @@
 """Post-hoc control: does the whisker-stim hotspot land in the barrel field (SSp-bfd)?
 
 Not used for fitting. For each candidate (roll, pitch, A), warp the projected atlas label map into
-widefield space and measure where the stim - no-stim hotspot falls.
+widefield space and measure where the baseline-corrected stim response falls.
 """
 import os
 import sys
@@ -14,12 +14,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 import register as R  # noqa: E402
+import enhance  # noqa: E402
 
 ATLAS = json.load(open(f"{HERE}/atlas_ids.json"))
 BFD = np.array(ATLAS["bfd"])
 NAMES = {int(k): v for k, v in ATLAS["names"].items()}
 PATH = {int(k): v for k, v in ATLAS["path"].items()}
-WIN = slice(100, 116)       # 1.00-1.15 s, early response (100 Hz)
+WIN = slice(100, 116)       # 1.00-1.15 s, early response (100 Hz; stimulus at frame 100 = 1.00 s)
+BASELINE = slice(50, 100)   # 0.50-1.00 s, before the stimulus (the first frames of a trial carry an onset artifact)
 VOX_UM = 25.32
 
 
@@ -37,8 +39,7 @@ def area_id(label):
 
 def hotspot(brain):
     s = np.load(f"{C.DATA}/{brain}/wf_data/stim_trial_avg.npy")
-    n = np.load(f"{C.DATA}/{brain}/wf_data/no_stim_trial_avg.npy")
-    d = ndi.gaussian_filter((s - n)[WIN].mean(0), 3)
+    d = ndi.gaussian_filter(s[WIN].mean(0) - s[BASELINE].mean(0), 3)     # baseline-corrected stim response
     return d
 
 
@@ -49,10 +50,11 @@ def evaluate(brain, roll, pitch, A):
     idx = inv.reshape(proj["label"].shape).astype(np.float32)
     L = ids[R.warp(idx, np.array(A), interp=cv2.INTER_NEAREST).astype(int)]
     d = hotspot(brain)
-    py, px = np.unravel_index(np.argmax(d), d.shape)
+    win = enhance.window_mask(brain, d.shape, display=True)      # response measured in the window only (edge artifacts)
+    py, px = np.unravel_index(np.argmax(np.where(win, d, -np.inf)), d.shape)
     bfd = np.isin(L, BFD)
-    top = d >= np.percentile(d, 99)
-    half = d >= 0.5 * d.max()
+    top = win & (d >= np.percentile(d[win], 99))
+    half = win & (d >= 0.5 * d[win].max())
     # Distance peak -> barrel field, measured in iDISCO voxels (um), via inverse transform
     Ai = cv2.invertAffineTransform(np.array(A, np.float32))
     pm = Ai[:, :2] @ np.array([px, py]) + Ai[:, 2]
