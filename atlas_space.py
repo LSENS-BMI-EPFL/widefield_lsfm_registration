@@ -203,6 +203,14 @@ def main(brains):
             for ext in ("png", "pdf"):
                 f1.savefig(f"{out_fig}/{b}_{'stim' if key == 'stim' else 'vessels'}_perens_dorsal.{ext}", dpi=300)
             plt.close(f1)
+            if key == "stim":                     # colorbar for the single panel, same scale, in % dF/F
+                f2, a2 = plt.subplots(figsize=(0.5, 2))
+                f2.colorbar(plt.cm.ScalarMappable(matplotlib.colors.Normalize(lo * 100, hi * 100), cmap), cax=a2,
+                            label="ΔF/F (%)")
+                a2.tick_params(labelsize=7)
+                for ext in ("png", "pdf"):
+                    f2.savefig(f"{out_fig}/{b}_stim_perens_dorsal_colorbar.{ext}", dpi=300, bbox_inches="tight")
+                plt.close(f2)
     # all brains: wS1 half-max contours on the same standard map
     img = base()
     img[edges] = [0.55, 0.55, 0.55]
