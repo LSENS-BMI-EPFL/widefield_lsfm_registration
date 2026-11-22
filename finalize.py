@@ -16,6 +16,7 @@ import config as C  # noqa: E402
 import validate as V  # noqa: E402
 import register as R  # noqa: E402
 import brain_axes as BA  # noqa: E402
+import surface as S  # noqa: E402
 
 
 def main(brain, local_json, mode="affine"):
@@ -24,7 +25,7 @@ def main(brain, local_json, mode="affine"):
     roll, pitch, A = best["roll"], best["pitch"], np.array(best["A"])
     _, e = R.moving_for_view(brain, roll, pitch)
     fx = R.fixed_for(brain)
-    ncc = R.score(R.blur(fx["ridge"], 1.2), fx["mask"], R.blur(e["ridge"] * e["mask"], 1.2), A)
+    ncc = R.score(R.blur(fx["ridge"], 1.2), fx["mask"], R.blur_m(e["ridge"] * e["mask"], 1.2), A)
     ev = V.evaluate(brain, roll, pitch, A)
     L = ev.pop("L")
     lat, ap = BA.anatomical(BA.axes(brain, A, (roll, pitch)), roll, pitch)
@@ -35,7 +36,8 @@ def main(brain, local_json, mode="affine"):
         A_projection_to_widefield=A.tolist(), decomposition=best["decomposition"],
         vessel_ncc=ncc, window_coverage=best["coverage"],
         widefield_frame="<brain>_wf_image.tif",
-        projection="surface.project(prepare(brain), roll, pitch): 25.3 um px, rot90 CCW; roll/pitch are relative "
+        projection=f"surface.project(prepare(brain), roll, pitch): {S.VOX_UM:g} um px (atlas grid), rot90 CCW;"
+                   " roll/pitch are relative "
                    "to the LSFM volume axes, anatomical_* are relative to the brain's own axes (brain_axes.py)",
         wS1_control=ev)
     json.dump(rec, open(f"{C.RESULTS}/{brain}_transform.json", "w"), indent=1)

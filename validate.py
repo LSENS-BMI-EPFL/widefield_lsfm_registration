@@ -15,6 +15,7 @@ sys.path.insert(0, HERE)
 import config as C  # noqa: E402
 import register as R  # noqa: E402
 import enhance  # noqa: E402
+import surface as S  # noqa: E402
 
 ATLAS = json.load(open(f"{HERE}/atlas_ids.json"))
 BFD = np.array(ATLAS["bfd"])
@@ -22,7 +23,7 @@ NAMES = {int(k): v for k, v in ATLAS["names"].items()}
 PATH = {int(k): v for k, v in ATLAS["path"].items()}
 WIN = slice(100, 116)       # 1.00-1.15 s, early response (100 Hz; stimulus at frame 100 = 1.00 s)
 BASELINE = slice(50, 100)   # 0.50-1.00 s, before the stimulus (the first frames of a trial carry an onset artifact)
-VOX_UM = 25.32
+VOX_UM = S.VOX_UM             # projection px (atlas grid)
 
 
 def area_id(label):
@@ -41,6 +42,22 @@ def hotspot(brain):
     s = np.load(f"{C.DATA}/{brain}/wf_data/stim_trial_avg.npy")
     d = ndi.gaussian_filter(s[WIN].mean(0) - s[BASELINE].mean(0), 3)     # baseline-corrected stim response
     return d
+
+
+def activity_clim():
+    """Common colour range (dF/F) of every activity image: config.ACTIVITY_CLIM, or the lowest 2nd / highest 99.8th
+    percentile of the stim response inside the window over all brains in config.HEMISPHERE that have data."""
+    if C.ACTIVITY_CLIM is not None:
+        return tuple(float(v) for v in C.ACTIVITY_CLIM)
+    lo, hi = [], []
+    for b in sorted(C.HEMISPHERE):
+        if not os.path.exists(f"{C.DATA}/{b}/wf_data/stim_trial_avg.npy"):
+            continue
+        d = hotspot(b)
+        v = d[enhance.window_mask(b, d.shape, display=True)]
+        lo.append(np.percentile(v, 2))
+        hi.append(np.percentile(v, 99.8))
+    return float(min(lo)), float(max(hi))
 
 
 def evaluate(brain, roll, pitch, A):

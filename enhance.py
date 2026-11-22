@@ -9,6 +9,7 @@ from skimage.filters import frangi, apply_hysteresis_threshold
 from skimage.morphology import remove_small_objects, skeletonize
 
 import config as C
+import surface
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ATLAS = json.load(open(f"{HERE}/atlas_ids.json"))
@@ -154,14 +155,27 @@ def _masked_smooth(x, m, s):
     return ndi.gaussian_filter(np.where(m, x, 0), s) / np.maximum(ndi.gaussian_filter(m.astype(np.float32), s), 1e-3)
 
 
-NETWORK = dict(sigmas=(1.0, 1.5, 2.0, 3.0, 4.0), lo=0.06, hi=0.2, min_size=40, max_slope=1.5, edge_px=5,
-               edge_keep_px=7, valley_vox=2.5)
+# LSFM vessel network. Lengths in um (converted to projection px with surface.vox), areas in um^2.
+# The values equal the earlier settings in px on the 25.33 um grid.
+NETWORK = dict(sigmas_um=(25.3, 38.0, 50.7, 76.0, 101.3), lo=0.06, hi=0.2, min_size_um2=25650, max_slope=1.5,
+               slope_sigma_um=127, edge_um=127, edge_keep_um=177, valley_um=63, valley_sigma_um=203,
+               valley_min_um2=128300, valley_dilate_um=101, open_um=51, flat_sigma_um=253, blob_dilate_um=51,
+               bubble_min_um2=19240, bubble_dilate_um=76)
+
+
+def _it(um):
+    """Morphology iterations for a length in um (at least 1)."""
+    return max(1, int(round(surface.vox(um))))
+
+
+def _px2(um2):
+    return int(round(um2 / surface.VOX_UM ** 2))
 
 
 def idisco(proj):
     """Surface-vessel network of the iDISCO projection (vessels are dark).
 
-    1. Isocortex, minus large-scale steep surface (brain edges, fissure walls), eroded by edge_px.
+    1. Isocortex, minus large-scale steep surface (brain edges, fissure walls), eroded by edge_um.
     2. Log + flat-field; bright debris blobs, round dark bubbles and interior mask holes (with their rims) are
        set to the neutral tissue level so they create no false ridges.
     3. Multi-scale Frangi (25-100 um), hysteresis threshold (a pixel is kept if weakly vessel-like and
@@ -169,39 +183,42 @@ def idisco(proj):
     ridge = vesselness on the segmented network, used for the fit; seg/skel/flat for figures."""
     p = NETWORK
     v, z = proj["vessel"], proj["z"]
-    cortex = ndi.binary_opening(np.isin(proj["label"], ISOCORTEX) & np.isfinite(v), iterations=2)
+    cortex = ndi.binary_opening(np.isin(proj["label"], ISOCORTEX) & np.isfinite(v), iterations=_it(p["open_um"]))
     zf = np.nan_to_num(z, nan=np.nanmax(z))
-    gy, gx = np.gradient(ndi.gaussian_filter(zf, 5))
+    # z is in voxels, the image in px of the same size: the slope is dimensionless
+    gy, gx = np.gradient(ndi.gaussian_filter(zf, surface.vox(p["slope_sigma_um"])))
     # deep, large surface valleys = fissures (interhemispheric, transverse), not vessels
-    valley = remove_small_objects((zf - ndi.gaussian_filter(zf, 8)) > p["valley_vox"], 200)
-    keep = cortex & (np.hypot(gx, gy) < p["max_slope"]) & ~ndi.binary_dilation(valley, iterations=4)
-    m = ndi.binary_erosion(keep, iterations=p["edge_px"])
+    valley = remove_small_objects((zf - ndi.gaussian_filter(zf, surface.vox(p["valley_sigma_um"]))) >
+                                  surface.vox(p["valley_um"]), _px2(p["valley_min_um2"]))
+    keep = cortex & (np.hypot(gx, gy) < p["max_slope"]) & ~ndi.binary_dilation(valley, iterations=_it(p["valley_dilate_um"]))
+    m = ndi.binary_erosion(keep, iterations=_it(p["edge_um"]))
     lg = np.log(np.maximum(np.nan_to_num(v, nan=1.0), 1e-3))
-    flat = np.where(m, lg - _masked_smooth(lg, m, 10), 0)
+    flat = np.where(m, lg - _masked_smooth(lg, m, surface.vox(p["flat_sigma_um"])), 0)
     med = np.median(flat[m])
     mad = np.median(np.abs(flat[m] - med)) * 1.4826
-    blobs = ndi.binary_dilation(m & (flat > med + 4 * mad), iterations=2)          # bright debris
+    blobs = ndi.binary_dilation(m & (flat > med + 4 * mad), iterations=_it(p["blob_dilate_um"]))   # bright debris
     lab, _ = ndi.label(m & (flat < med - 6 * mad))
     for k, sl in enumerate(ndi.find_objects(lab), 1):                              # round dark bubbles
         comp = ndi.binary_fill_holes(lab[sl] == k)
         h, w = comp.shape
-        if comp.sum() > 30 and comp.sum() / (h * w) > 0.45 and max(h, w) / max(min(h, w), 1) < 2.5:
-            blobs[sl] |= ndi.binary_dilation(comp, iterations=3)
+        if comp.sum() > _px2(p["bubble_min_um2"]) and comp.sum() / (h * w) > 0.45 and max(h, w) / max(min(h, w), 1) < 2.5:
+            blobs[sl] |= ndi.binary_dilation(comp, iterations=_it(p["bubble_dilate_um"]))
     holes = ndi.binary_fill_holes(m) & ~m
-    blobs |= holes | (ndi.binary_dilation(holes, iterations=3) & m)                # holes + their dark rims
+    blobs |= holes | (ndi.binary_dilation(holes, iterations=_it(p["bubble_dilate_um"])) & m)   # holes + their dark rims
     flat = np.where(blobs, 0, flat)                                                 # neutral tissue level
     valid = m | holes
     flat = np.where(valid, flat, 0)                                                 # neutral outside
-    vs = frangi(flat, sigmas=p["sigmas"], black_ridges=True, alpha=0.5, beta=0.5, gamma=None)
-    inner = ndi.binary_erosion(ndi.binary_fill_holes(m), iterations=p["edge_px"]) & ~ndi.binary_dilation(blobs, iterations=2)
+    vs = frangi(flat, sigmas=[surface.vox(u) for u in p["sigmas_um"]], black_ridges=True, alpha=0.5, beta=0.5, gamma=None)
+    inner = ndi.binary_erosion(ndi.binary_fill_holes(m), iterations=_it(p["edge_um"])) & \
+        ~ndi.binary_dilation(blobs, iterations=_it(p["blob_dilate_um"]))
     vs = np.where(inner, vs, 0)
     vs = np.clip(vs / np.percentile(vs[inner], 99.5), 0, 1)
-    seg = remove_small_objects(apply_hysteresis_threshold(vs, p["lo"], p["hi"]), p["min_size"])
+    seg = remove_small_objects(apply_hysteresis_threshold(vs, p["lo"], p["hi"]), _px2(p["min_size_um2"]))
     # drop pieces that run along the edge of the cortex (fissure / silhouette walls, not vessels)
     lab, n = ndi.label(seg, structure=np.ones((3, 3)))
     if n:
         med_edge = np.array(ndi.median(ndi.distance_transform_edt(valid), lab, np.arange(1, n + 1)))
-        seg = np.isin(lab, np.arange(1, n + 1)[med_edge >= p["edge_keep_px"]])
+        seg = np.isin(lab, np.arange(1, n + 1)[med_edge >= surface.vox(p["edge_keep_um"])])
     ridge = vs * ndi.binary_dilation(seg, iterations=1)
     ridge = np.clip(ridge / np.percentile(ridge[ridge > 0], 95), 0, 1).astype(np.float32)
     return dict(ridge=ridge, mask=inner, seg=seg, skel=skeletonize(seg), flat=flat, valid=valid,

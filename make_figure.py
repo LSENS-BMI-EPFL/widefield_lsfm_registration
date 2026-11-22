@@ -27,7 +27,13 @@ import surface as S  # noqa: E402
 MAGENTA = np.array([0.90, 0.20, 0.80])
 GREEN = np.array([0.20, 0.75, 0.30])
 CYAN = (0.0, 0.85, 0.95)
-LW = 0.8          # border line width (pt); one image pixel is 0.72 pt in the saved panels
+LW = 1.1          # line width (pt) of the area borders and the outline; one image pixel is 0.72 pt in the saved panels
+BORDER_SIGMA = 1.5  # px; area masks are smoothed by this before their borders are traced (removes the pixel staircase)
+# Activity images: the atlas-space colour scheme (atlas_space.py): inferno, grey area borders, SSp-bfd in green;
+# one colour range for all of them (validate.activity_clim)
+ACT_CMAP = "inferno"
+ACT_BORDER = (0.35, 0.35, 0.35)
+BFD_GREEN = (0.2, 0.85, 0.3)
 LOSS_RANGE = 40  # +/- px translation around the optimum for the loss landscape
 LOSS_STEP = 1
 
@@ -52,6 +58,62 @@ def outline_lines(region, sigma=1.0):
     from skimage.measure import find_contours
     padded = np.pad(region.astype(float), 2)                       # closed contours at the image border
     return [c[:, ::-1] - 2 for c in find_contours(ndi.gaussian_filter(padded, sigma), 0.5)]
+
+
+def _runs(keep, closed):
+    """Index runs where keep is True, each extended by one point on both sides (closes gaps at junctions)."""
+    n = len(keep)
+    if keep.all():
+        return [np.arange(n)]
+    if closed:                                                     # start the walk at a dropped point
+        start = int(np.argmin(keep))
+        order = np.roll(np.arange(n), -start)
+    else:
+        order = np.arange(n)
+    k = keep[order]
+    out, i = [], 0
+    while i < n:
+        if not k[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and k[j]:
+            j += 1
+        lo, hi = max(i - 1, 0), min(j + 1, n)
+        out.append(order[lo:hi])
+        i = j
+    return out
+
+
+def border_lines(La, region, sigma=BORDER_SIGMA, only=None):
+    """Area borders inside region as smooth sub-pixel polylines (x, y). Each area's mask is smoothed (Gaussian, sigma
+    px) and its 0.5 contour traced. A border shared by two areas is kept once (traced from the area with the lower id);
+    contour parts along the region's edge are dropped (the outline is drawn separately).
+    only: list of area ids -> the outline of their union instead (e.g. SSp-bfd), without the parts on the edge."""
+    from skimage.measure import find_contours
+    L = np.where(region, La, 0)
+    pad = 2
+    Lp = np.pad(L, pad)
+    groups = [np.isin(Lp, only)] if only is not None else [Lp == k for k in np.unique(L[region]) if k > 0]
+    ids = [None] if only is not None else [k for k in np.unique(L[region]) if k > 0]
+    lines = []
+    for k, m in zip(ids, groups):
+        if not m.any():
+            continue
+        sm = ndi.gaussian_filter(m.astype(np.float32), sigma)
+        gy, gx = np.gradient(sm)
+        for c in find_contours(sm, 0.5):
+            g = np.stack([ndi.map_coordinates(gy, c.T, order=1), ndi.map_coordinates(gx, c.T, order=1)], 1)
+            g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-9)
+            q = np.round(c - 2.0 * g).astype(int)                  # 2 px outside the area
+            q = np.clip(q, 0, np.array(Lp.shape) - 1)
+            other = Lp[q[:, 0], q[:, 1]]
+            keep = (other > 0) if only is not None else (other > k)
+            closed = np.allclose(c[0], c[-1])
+            for idx in _runs(keep, closed):
+                if len(idx) >= 2:
+                    lines.append(c[idx][:, ::-1] - pad)           # (x, y)
+    return lines
 
 
 def hemisphere_map(brain, roll, pitch):
@@ -152,6 +214,64 @@ def save(img, path, cmap=None, vmin=None, vmax=None, lines=None):
     plt.close(fig)
 
 
+def activity_rgb(d, clim=None):
+    """Stim response (dF/F) -> RGB in the common activity colour scale."""
+    lo, hi = clim or V.activity_clim()
+    return plt.get_cmap(ACT_CMAP)(np.clip((d - lo) / (hi - lo), 0, 1))[..., :3]
+
+
+def activity_colorbar(path, clim=None):
+    """Colorbar of the common activity scale, in % dF/F."""
+    lo, hi = clim or V.activity_clim()
+    fig, ax = plt.subplots(figsize=(0.5, 2))
+    fig.colorbar(plt.cm.ScalarMappable(matplotlib.colors.Normalize(lo * 100, hi * 100), ACT_CMAP), cax=ax,
+                 label="ΔF/F (%)")
+    ax.tick_params(labelsize=7)
+    for ext in ("png", "pdf"):
+        fig.savefig(f"{path}.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def bfd_ids():
+    return sorted({int(i) for i in V.BFD} | {int(V.area_id(i)) for i in V.BFD})
+
+
+def widefield_panels(brain, La, region, suffix=""):
+    """Panels e-h for an area map La (area ids, display_labels) inside the outline region, as (image, cmap, lines).
+    The crop, outline and size depend only on region, so the panels of every layer line up with the surface ones.
+      e  atlas borders (cyan) on the widefield image
+      f  stim response (common activity scale), borders grey, SSp-bfd green
+      g  reference view (rot90: medial right, lateral left, cropped to the outline): borders on the widefield vessels
+      h  reference view: stim response with the widefield vessels, borders grey, SSp-bfd green
+    Borders are smooth vector lines (border_lines); the outline is the smoothed region outline."""
+    raw = R.fixed_for(brain)["raw"]
+    borders = border_lines(La, region)
+    bfd = border_lines(La, region, only=bfd_ids())
+    outline = outline_lines(region)
+    d = V.hotspot(brain)
+    p = {}
+    g = nrm(np.log(raw), 0.5, 99.8)
+    p[f"e_atlas{suffix}_on_widefield"] = (np.dstack([g] * 3), None, [(borders, CYAN, LW), (outline, CYAN, LW)])
+    act = activity_rgb(d)
+    p[f"f_stim_response_atlas{suffix}"] = (act, None, [(borders, ACT_BORDER, LW), (bfd, BFD_GREEN, LW),
+                                                       (outline, "k", LW)])
+    lgr = np.log(np.maximum(raw, 1))
+    flat = lgr - ndi.gaussian_filter(lgr, 10)                      # vessels dark, illumination removed
+    box = crop_box(region, pad=3)
+    ref = lambda P: view_lines(P, box, rot=True)                    # noqa: E731
+    gv = nrm(flat, 1, 99.5, region)
+    g_img = np.dstack([gv] * 3)
+    g_img[~region] = 1
+    p[f"g_vessels_atlas{suffix}_reference_view"] = (np.rot90(g_img[box]), None,
+                                                    [(ref(borders), CYAN, LW), (ref(outline), "k", LW)])
+    ves = nrm(-flat, 80, 99.5, region)[..., None] * 0.7
+    h_img = act * (1 - ves) + 0.95 * ves
+    h_img[~region] = 1
+    p[f"h_activity_vessels_atlas{suffix}_reference_view"] = (
+        np.rot90(h_img[box]), None, [(ref(borders), ACT_BORDER, LW), (ref(bfd), BFD_GREEN, LW), (ref(outline), "k", LW)])
+    return p
+
+
 def main(brain, transform=None, tag=""):
     out = os.path.join(C.FIGURES, brain + tag)
     os.makedirs(out, exist_ok=True)
@@ -164,9 +284,9 @@ def main(brain, transform=None, tag=""):
     panels = {}
 
     # a1: raw LSFM vessel channel, dorsal MIP (same rot90 orientation as the projection)
-    vol = np.load(f"{C.CACHE}/{brain}_lsfm25.npy")
+    vol = np.load(S.cache_path(brain, "lsfm"), mmap_mode="r")
     mip = np.rot90(vol.max(0).astype(np.float32))
-    bm = np.rot90(np.load(f"{C.CACHE}/{brain}_norm_f16.npy", mmap_mode="r").max(0) > 0)
+    bm = np.rot90(np.load(S.cache_path(brain, "norm_f16"), mmap_mode="r").max(0) > 0)
     bm = ndi.binary_erosion(bm, iterations=3)
     panels["a1_lsfm_dorsal_mip"] = (np.where(bm, nrm(mip, 1, 99.5, bm), 0)[crop_box(bm)], "gray")
     # a2: cleaned surface layer (13-75 um below the pial surface, isocortex, artifacts filled), at the fitted
@@ -194,58 +314,21 @@ def main(brain, transform=None, tag=""):
     mr = np.clip(R.blur(Mw, 0.8) * 1.6, 0, 1)
     panels["c_vessel_alignment"] = (np.clip(tint(mr, MAGENTA) + tint(wr, GREEN), 0, 1), None)
 
-    # e: atlas boundaries (warped label map) on the widefield image, inside the window
+    # e-h: atlas borders on the widefield image, the stim response and the reference view (widefield_panels)
     ev = V.evaluate(brain, roll, pitch, A)
     L = ev.pop("L")
-    La = area_map(L)
     region = figure_region(brain, roll, pitch, A)                # outline: a2 cortex surface joined with the window
-    La = display_labels(La, region)                               # no slivers or tiny islands
-    ed = edges_of(La) & ndi.binary_erosion(region)               # area borders: pixel edges inside the outline
-    outline = outline_lines(region)                               # outline: smooth line drawn over the panel
+    La = display_labels(area_map(L), region)                      # no slivers or tiny islands
     np.save(f"{out}/atlas_area_labels_widefield.npy", La)
-    g = nrm(np.log(raw), 0.5, 99.8)
-    rgb = np.dstack([g] * 3)
-    rgb[ed] = CYAN
-    panels["e_atlas_on_widefield"] = (rgb, None, [(outline, CYAN, LW)])
-
-    # f: baseline-corrected stim response (1.00-1.15 s minus 0.50-1.00 s), atlas edges in black
-    d = V.hotspot(brain)
-    v = np.percentile(np.abs(d), 99.5)
-    cm = plt.get_cmap("RdBu_r")((np.clip(d / v, -1, 1) + 1) / 2)[..., :3]
-    cm[ed] = 0
-    panels["f_stim_response_atlas"] = (cm, None, [(outline, "k", LW)])
-
-    # g/h: reference-style views (rot90: medial right, lateral left), cropped to the outline region.
-    # g: atlas on widefield vessels; h: stim map (inferno) with widefield vessels and atlas.
-    lgr = np.log(np.maximum(raw, 1))
-    flat = lgr - ndi.gaussian_filter(lgr, 10)                      # vessels dark, illumination removed
-    box = crop_box(region, pad=3)
-    gv = nrm(flat, 1, 99.5, region)
-    g_img = np.dstack([gv] * 3)
-    g_img[~region] = 1
-    g_img[ed] = CYAN
-    ref = view_lines(outline, box, rot=True)
-    panels["g_vessels_atlas_reference_view"] = (np.rot90(g_img[box]), None, [(ref, "k", LW)])
-    lo, hi = np.percentile(d[region], [2, 99.8])
-    h_img = plt.get_cmap("inferno")(np.clip((d - lo) / (hi - lo), 0, 1))[..., :3]
-    ves = nrm(-flat, 80, 99.5, region)[..., None] * 0.7
-    h_img = h_img * (1 - ves) + 0.95 * ves
-    h_img[~region] = 1
-    h_img[ed] = 0.55
-    panels["h_activity_vessels_atlas_reference_view"] = (np.rot90(h_img[box]), None, [(ref, "k", LW)])
+    panels.update(widefield_panels(brain, La, region))
 
     panels = {k: v if len(v) == 3 else (*v, None) for k, v in panels.items()}
     for name, (img, cmap, lines) in panels.items():
         save(img, f"{out}/{name}", cmap=cmap, vmin=0 if cmap else None, vmax=1 if cmap else None, lines=lines)
-    # colorbar for f, in dF/F units of the trial averages
-    fig, ax = plt.subplots(figsize=(0.5, 2))
-    fig.colorbar(plt.cm.ScalarMappable(matplotlib.colors.Normalize(-v, v), "RdBu_r"), cax=ax)
-    ax.tick_params(labelsize=7)
-    fig.savefig(f"{out}/f_colorbar.pdf", bbox_inches="tight"); fig.savefig(f"{out}/f_colorbar.png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
+    activity_colorbar(f"{out}/f_colorbar")
 
     # d: loss landscape = 1 - masked NCC over translation offsets around the optimum (same score as the fit)
-    F, Fm, Mb = R.blur(fx["ridge"], 1.2), fx["mask"], R.blur(M, 1.2)
+    F, Fm, Mb = R.blur(fx["ridge"], 1.2), fx["mask"], R.blur_m(M, 1.2)
     offs = np.arange(-LOSS_RANGE, LOSS_RANGE + 1, LOSS_STEP)
     loss = np.zeros((len(offs), len(offs)))
     for i, dy in enumerate(offs):
@@ -290,7 +373,7 @@ def main(brain, transform=None, tag=""):
     fig.savefig(f"{out}/overview.png", dpi=120)
     stats = dict(loss_min_offset_px=[int(offs[ix]), int(offs[iy])], loss_min=float(loss.min()),
                  loss_at_zero=float(loss[LOSS_RANGE // LOSS_STEP, LOSS_RANGE // LOSS_STEP]),
-                 f_colorbar_abs_max=float(v), **{k: ev[k] for k in ("peak_region", "halfmax_in_bfd", "top1pct_in_bfd")})
+                 activity_clim_dff=list(V.activity_clim()), **{k: ev[k] for k in ("peak_region", "halfmax_in_bfd", "top1pct_in_bfd")})
     json.dump(stats, open(f"{out}/stats.json", "w"), indent=1)
     print(stats)
 

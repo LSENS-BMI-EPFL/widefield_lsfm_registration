@@ -42,7 +42,10 @@ All paths and settings are in `config.py`:
 | `RESULTS`, `FIGURES` | Output folders (default: `results/`, `figures/` next to the code) |
 | `HEMISPHERE` | Imaged hemisphere per brain (`"left"` / `"right"`, the animal's own side); `None` searches both |
 | `PRIORS` | Expected imaging tilt of the camera relative to the brain (default 30° lateral / 0° AP, σ 5°) and its weight |
-| `WF_PIXEL_UM` | Widefield pixel size at the sample (µm). Bounds the fitted scale together with `CLEARING_SCALE`; `None` uses a scale range of 0.8–1.2 |
+| `WF_PIXEL_UM` | Widefield pixel size at the sample (µm). Bounds the fitted scale together with `CLEARING_SCALE`; `None` bounds the size of a widefield pixel in the cleared brain to `WF_PIXEL_UM_CLEARED_UNCALIBRATED` (21.1–31.7 µm) |
+| `LAYER` | Layer at which area borders are taken for the layer figures and the layer atlas-space maps: `"surface"`, `"l2/3"`, `"l4"`, `"l5"` (default) or `"l6"` |
+| `ACTIVITY_CLIM` | Colour range (ΔF/F) shared by every activity image; `None` = one common range from the data of all brains |
+| `ATLAS_VIEW_TILT` | Camera tilt (lateral, AP; deg) of the rotated atlas view; default = the imaging prior (30°, 0°) |
 | `WINDOW_MODE` | `"auto"`: cranial-window masks detected from the data; `"manual"`: hand-drawn polygons `WINDOW` (fitting) and `WINDOW_DISPLAY` (display, atlas mapping) |
 | `WINDOW_FIT_MARGIN_PX` | Auto mode: the fitting mask is the detected window shrunk by this margin |
 
@@ -70,20 +73,21 @@ The view searches run 100–150 fits in parallel (one process per CPU core). A b
 
 | Step | Script | What it does |
 |---|---|---|
-| 1. Cache | `load_cache.py` | Loads the vessel channel (brainreg `downsampled.tiff`, resampled to a 25.3 µm grid) and the registered atlas; builds the brain mask and the normalized volume. Skipped if the cache exists. |
+| 1. Cache | `load_cache.py` | Loads the vessel channel (brainreg `downsampled.tiff`, kept on the atlas grid, 20 µm, not resampled) and the registered atlas; builds the brain mask and the normalized volume. Skipped if the cache exists. |
 | 2. Start | `initialize.py` | Global search for a starting transform, from the data alone |
 | 3. Brain axes | `brain_axes.py` | The brain's left–right, anterior–posterior and dorsal axes inside the scan |
 | 4. Fit | `refine_local.py` | Fits a 2D affine for each view on a grid of anatomical tilts and picks the view |
 | 5. Final outputs | `finalize.py` | Transform, atlas label per widefield pixel, sensory-response check |
 | 6. Figure panels | `make_figure.py` | Figure panels (300 dpi PNG + PDF) and `overview.png` |
-| 7. Standard space | `atlas_space.py` | Each widefield pixel → Perens atlas coordinates; data on the atlas dorsal view |
-| 8. Layer-5 borders | `l5_boundaries.py` | Area borders at layer 5 instead of the surface, for layer-5 recordings |
+| 7. Layer borders | `layer_boundaries.py` | Area borders at the layer set by `LAYER` (or `--layer`) instead of the surface |
+| 8. Standard space | `atlas_space.py` | Each widefield pixel → Perens atlas coordinates; data on the atlas dorsal view and on a rotated view (atlas turned to the camera tilt). Run for the surface and for `LAYER` |
 
-`atlas_space.py` accepts several brains (`python atlas_space.py PB105 PB104`) and then also overlays all of them on the
-standard dorsal view.
+`atlas_space.py` accepts several brains (`python atlas_space.py PB105 PB104 --layer l5`) and then also overlays all of
+them on the standard views.
 
 Supporting modules: `surface.py` (surface projection for any view), `enhance.py` (vessel maps and window masks),
-`register.py` (score and affine helpers), `validate.py` (sensory-response check).
+`register.py` (score and affine helpers), `validate.py` (sensory-response check, common activity scale), `layers.py`
+(layer selection and the layer projection along the camera rays).
 
 ## Outputs
 
@@ -91,14 +95,15 @@ Supporting modules: `surface.py` (surface projection for any view), `enhance.py`
 |---|---|
 | `results/<brain>_transform.json` | Fitted view (volume angles and anatomical tilts), 2×3 affine (projection → widefield), vessel score, sensory-response check |
 | `results/<brain>_atlas_labels_widefield.{npy,tif}` | Atlas structure ID (layer level) for every widefield pixel |
-| `results/<brain>_widefield_to_perens_mm.npy` | (H, W, 3) Perens coordinates (mm, axes a/s/r) for every widefield pixel; NaN outside the window. Maps any widefield frame into standard space. |
-| `results/<brain>_perens_dorsal.npz` | Sensory response and vessel image resampled onto the atlas dorsal view |
+| `results/<brain>_widefield_to_perens_mm.npy` | (H, W, 3) Perens coordinates (mm, axes a/s/r) for every widefield pixel inside the figure outline (panel e), 50 µm below the surface; NaN outside. Maps any widefield frame into standard space. `_<L>`: the point where the pixel's camera ray reaches layer L |
+| `results/<brain>_perens_{dorsal,rotated}[_<L>].npz` | Sensory response and vessel image resampled onto the atlas dorsal / rotated view, with the view geometry and the atlas labels (surface, or at layer L) |
+| `results/<brain>_atlas_labels_widefield_<L>.npy` | Structure ID at layer L for every widefield pixel (0 = layer not found) |
 | `results/<brain>/init.json` | Starting transform and every candidate of the global search |
 | `results/<brain>/local.json` | Fit for every view of the grid |
 | `results/<brain>/brain_axes.json` | Brain axes |
 | `figures/<brain>/` | a1 LSFM dorsal projection, a2 surface layer, a3 LSFM vessel network, b1–b3 widefield raw / vesselness / vessel mask, c vessel overlay, d loss landscape, e atlas on widefield, f response with atlas (+ colorbar), g/h atlas on vessels / activity in a reference orientation; `stats.json` |
-| `figures/<brain>_L5/` | Panels e–h with layer-5 borders, surface vs layer-5 borders (e2), `l5_depth_um.npy`, `stats.json` |
-| `figures/atlas_space/` | Response and vessel maps on the Perens dorsal view; response half-max contours of all brains |
+| `figures/<brain>_<L>/` | Panels e–h with the borders at layer L (same crop, outline and size as the surface panels), surface vs layer borders (e2), `<L>_depth_um.npy`, `stats.json` |
+| `figures/atlas_space[_<L>]/` | Response and vessel maps on the Perens dorsal and rotated views, with surface borders (or the borders at layer L); response half-max contours of all brains; one colorbar |
 
 ## Method
 
@@ -106,9 +111,11 @@ Supporting modules: `surface.py` (surface projection for any view), `enhance.py`
 
 - **Mask and normalization.** The brain mask comes from the smoothed volume, thresholded halfway between the median
   intensity inside and outside the registered atlas, then cleaned morphologically. Intensities are divided by the local
-  tissue level (Gaussian, σ = 6 voxels).
+  tissue level (Gaussian, σ = 152 µm).
+- **Grid.** The volume stays on brainreg's atlas grid (20 µm for the Perens atlas), the same grid as the registered
+  atlas. All lengths of the projection and the vessel maps are set in µm.
 - **Projection.** For a given view, the first surface along each ray is found and smoothed. The image is the mean
-  intensity 13–75 µm below it; surface vessels fade below ~100 µm.
+  intensity 13–76 µm below it; surface vessels fade below ~100 µm.
 - **Labels.** Each pixel takes the shallowest atlas label 50–300 µm below the surface.
 
 Views are given as lateral and AP tilt relative to the brain's own axes:
@@ -177,12 +184,26 @@ The transform from projection to widefield is a 2D affine.
 **Widefield labels.** The projected labels are warped into the widefield image (nearest neighbour). For display, they
 are collapsed to cortical areas with a 7 × 7 mode filter.
 
-**Standard space.** Each widefield pixel is mapped to the LSFM point 50 µm below the surface (inverse affine + view),
-then through the brainreg deformation fields into Perens coordinates.
+**Layer borders (`layers.py`, `layer_boundaries.py`).** For a deeper layer, each pixel follows its camera ray from the
+surface and takes the area of the first isocortex voxel at that layer or deeper, in the imaged hemisphere (at the
+medial edge, tilted rays would otherwise cross the fissure into the other hemisphere). Areas
+without the layer (no L4 in motor or frontal cortex) thus give the area of their next deeper layer; `stats.json`
+reports the share of such pixels (`from_deeper_layer_frac`). Pixels whose ray never meets the layer take the nearest label.
+
+**Standard space.** The region inside the outline of the widefield figures (panel e: the imaged hemisphere's cortex,
+also where it extends beyond the window) is mapped, not only the window:
+each pixel goes to an LSFM point (inverse affine + view), 50 µm below the surface or, for a layer, the point where its
+camera ray reaches that layer in the imaged hemisphere; then through the brainreg deformation fields into Perens
+coordinates. The data are shown on two views of the atlas: the dorsal view, and a rotated view in which the atlas brain
+is turned by the imaging-angle prior (`ATLAS_VIEW_TILT`, 30° lateral, the head tilt of the widefield imaging), so the
+map looks like the widefield image. Atlas borders are taken at the same layer along each view ray, and the brain's
+outline is drawn. The window is used for the checks and the half-max contours (the image edges carry artifacts).
 
 **Figures.** The outline in the widefield figures is the imaged hemisphere's cortex (isocortex labels of the
 projection, cut at the midline with brainreg's hemisphere labels), mapped into the widefield image. It can extend
-beyond the window.
+beyond the window. Area borders are smooth vector lines (1.1 pt): each area's mask is smoothed (Gaussian, 1.5 px) and
+its contour traced, so a shared border is drawn once. Every activity image (panels f and h, atlas space, every brain
+and layer) uses one colour scale and the atlas-space scheme: inferno, grey area borders, SSp-bfd in green.
 
 ## Limitations
 

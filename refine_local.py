@@ -40,7 +40,7 @@ def penalty(p, mode, A=None):
 
 def local_search(M, F, Fm, A_init, trans_win, thetas, scales, sig=2.0, Mm=None):
     """Search rotation/scale perturbations of A_init (about the fixed center); translation by masked NCC."""
-    Mb, Fb = R.blur(M, sig), R.blur(F, sig)
+    Mb, Fb = R.blur_m(M, sig), R.blur(F, sig)
     H, W = M.shape
     cm = np.array([W / 2, H / 2])
     # where does the moving center land under A_init?
@@ -104,15 +104,15 @@ def fit_view(args):
     for mode in ("similarity", "affine"):
         p = np.zeros(6)
         for sig in R.FINE_SIGMAS:
-            Fb, Mb = R.blur(F, sig), R.blur(M, sig)
+            Fb, Mb = R.blur(F, sig), R.blur_m(M, sig)
             def fun(q):
                 Aq = R.compose(R.perturb(q, mode), A)
                 return -R.score(Fb, Fm, Mb, Aq, Mm) + penalty(q, mode, A)
             p = minimize(fun, p, method="Powell", options=dict(xtol=1e-3, ftol=1e-5, maxiter=4000)).x
         Af = R.compose(R.perturb(p, mode), A)
-        out[mode] = dict(score=R.score(R.blur(F, 1.2), Fm, R.blur(M, 1.2), Af),
+        out[mode] = dict(score=R.score(R.blur(F, 1.2), Fm, R.blur_m(M, 1.2), Af),
                          coverage=R.coverage(Fm, Mm, Af),
-                         score_s2=R.score(R.blur(F, 2.0), Fm, R.blur(M, 2.0), Af),
+                         score_s2=R.score(R.blur(F, 2.0), Fm, R.blur_m(M, 2.0), Af),
                          A=Af.tolist(), decomposition=R.describe(Af))
         out[mode]["objective"] = out[mode]["score"]
     return out

@@ -11,6 +11,7 @@ from scipy import ndimage as ndi
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import config as C  # noqa: E402
 import surface  # noqa: E402
 import enhance  # noqa: E402
 
@@ -23,6 +24,28 @@ _G = {}
 
 def blur(x, s):
     return ndi.gaussian_filter(x, s) if s > 0 else x
+
+
+def scale_range():
+    """Bounds on the overall scale, projection px (LSFM, surface.VOX_UM) -> widefield px. The camera magnification is
+    fixed, so with a calibrated widefield pixel only the clearing shrinkage is free (config.CLEARING_SCALE); without,
+    the size of a widefield pixel in the cleared brain is bounded by config.WF_PIXEL_UM_CLEARED_UNCALIBRATED.
+    Unbounded, the fit inflates the scale and matches a few large vessels of the wrong hemisphere."""
+    if C.WF_PIXEL_UM is None:
+        lo_um, hi_um = C.WF_PIXEL_UM_CLEARED_UNCALIBRATED
+    else:
+        lo_um, hi_um = (c * C.WF_PIXEL_UM for c in sorted(C.CLEARING_SCALE))
+    return surface.VOX_UM / hi_um, surface.VOX_UM / lo_um
+
+
+# Projection px per widefield px at the middle of the scale range. Blur widths of the fit are given in widefield px;
+# the LSFM map is blurred before it is warped, so its sigma is converted with this.
+M_PX_PER_WF_PX = 1.0 / float(np.sqrt(np.prod(scale_range())))
+
+
+def blur_m(M, s):
+    """Blur the LSFM (moving) map by s widefield px."""
+    return blur(M, s * M_PX_PER_WF_PX)
 
 
 def moving_for_view(brain, roll, pitch):

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Full registration for one brain, from the brainreg output, the widefield image and the trial averages only:
 # cache -> global start -> brain axes -> local fit (vessels) -> final outputs -> figure panels
-# -> standard atlas space -> layer-5 borders.
+# -> borders at the chosen layer (config.LAYER) -> standard atlas space (surface and that layer).
 # Usage: ./run_pipeline.sh PB105          (paths, priors and per-brain settings: config.py)
 set -euo pipefail
 B=$1
@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 RES=$($P -c "import config; print(config.RESULTS)")
 mkdir -p $RES/$B logs
-[ -f "$($P -c 'import config; print(config.CACHE)')/${B}_lsfm25.npy" ] || $P load_cache.py $B
+[ -f "$($P -c "import surface; print(surface.cache_path('$B', 'lsfm'))")" ] || $P load_cache.py $B
 echo "== start (global search)"
 $P initialize.py $B
 echo "== brain axes"
@@ -25,8 +25,10 @@ echo "== finalize"
 $P finalize.py $B $RES/$B/local.json affine
 echo "== figure panels"
 $P make_figure.py $B
+LAYER=$($P -c "import config; print(config.LAYER)")
+echo "== borders at layer $LAYER"
+$P layer_boundaries.py $B --layer "$LAYER"
 echo "== standard atlas space"
 ALL=$(ls $RES/*_transform.json | xargs -n1 basename | sed 's/_transform.json//')   # every brain with results,
-$P atlas_space.py $ALL                                                              # so the all-brains overlay is complete
-echo "== layer-5 borders"
-$P l5_boundaries.py $B
+$P atlas_space.py $ALL --layer surface                                              # so the all-brains overlay is complete
+[ "$LAYER" = surface ] || $P atlas_space.py $ALL --layer "$LAYER"

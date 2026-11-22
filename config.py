@@ -47,9 +47,25 @@ HEMISPHERE = {
     "PB105": "left",
 }
 # Widefield pixel size at the sample (um): camera pixel x binning / magnification. None = not calibrated, then the
-# fitted scale is bounded by SCALE_RANGE_UNCALIBRATED. The LSFM side is known from brainreg.json (2 x 12.66 um).
+# fitted scale is bounded by WF_PIXEL_UM_CLEARED_UNCALIBRATED. The LSFM side is the atlas grid (20 um, see surface.py).
 WF_PIXEL_UM = None
 # Linear size of the cleared brain relative to in vivo; with WF_PIXEL_UM it sets the scale bound (initialize.py).
 CLEARING_SCALE = (0.75, 1.05)
-SCALE_RANGE_UNCALIBRATED = (0.8, 1.2)
+# Uncalibrated: the size of one widefield pixel in the cleared brain (um), as a range. Same bound as the earlier
+# scale range 0.8-1.2 on the 25.3 um grid (25.33 / 1.2 ... 25.33 / 0.8).
+WF_PIXEL_UM_CLEARED_UNCALIBRATED = (21.1, 31.7)
+
+# Cortical layer at which area borders are taken (layer_boundaries.py, atlas_space.py): "surface", "l2/3", "l4", "l5"
+# or "l6". For a deeper layer, each widefield pixel takes the area where its camera ray first reaches that layer
+# (areas without the layer, e.g. no L4 in motor cortex, take the next deeper layer). Override: --layer.
+LAYER = "l5"
+
+# Colour scale of every activity image (widefield panels f/h, atlas-space maps; all brains): (lo, hi) in dF/F
+# (fraction), colormap inferno. None = one common range from the data of all brains in HEMISPHERE
+# (lowest 2nd / highest 99.8th percentile inside the window).
+ACTIVITY_CLIM = None
+
+# Rotated atlas view (atlas_space.py): the atlas seen at the expected camera tilt instead of straight from above, so
+# lateral cortex is not foreshortened. (lateral tilt toward the imaged hemisphere, AP tilt; deg)
+ATLAS_VIEW_TILT = (PRIORS["lat"], PRIORS["ap"])
 

@@ -4,38 +4,56 @@ prepare(brain): brain mask -> boundary points; intensity normalized by local tis
 project(prep, roll, pitch): for every pixel of a view rotated by (roll, pitch), find the
     visible surface (z-buffer of boundary points, smoothed to remove voxel terracing) and
     sample the volume with trilinear interpolation at continuous depths below it.
-Output grid: 1 px = 1 voxel = 25.3 um, rotated 90 deg CCW like the pipeline's aligned_bv.
+Grid: the atlas grid (brainreg's downsampled.tiff, not resampled): 1 px = 1 voxel = VOX_UM (20 um for
+perens_lsfm_mouse_20um), rotated 90 deg CCW like the pipeline's aligned_bv. Lengths below are set in um.
 """
 import os
+import json
 import numpy as np
 from scipy import ndimage as ndi
 import config as C
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VOX_MM = 0.02532
-DEPTHS = np.arange(0.5, 3.01, 0.25)     # voxels below surface for vessel signal (~13-75 um; vessels fade below ~100 um)
-VESSEL_Z_SIGMA = 3.0                    # extra surface smoothing for vessel sampling (removes voxel-terrace rings)
-LABEL_DEPTHS = np.arange(2, 12.1, 1.0)  # voxels below surface for the cortical label (~50-300 um)
+VOX_UM = float(json.load(open(f"{C.PERENS_ATLAS}/metadata.json"))["resolution"][0])   # atlas resolution
+VOX_MM = VOX_UM / 1000
+
+
+def vox(um):
+    """Length in um -> voxels (= projection px) of the working grid."""
+    return um / VOX_UM
+
+
+def cache_path(brain, name):
+    """Grid-dependent cache files carry the voxel size, so a cache from another grid is never reused."""
+    return f"{C.CACHE}/{brain}_{name}_{VOX_UM:g}um.npy"
+
+
+DEPTHS = vox(np.arange(12.7, 76.1, 6.33))   # below surface for vessel signal (13-76 um; vessels fade below ~100 um)
+VESSEL_Z_SIGMA = vox(76.0)                  # extra surface smoothing for vessel sampling (removes voxel-terrace rings)
+LABEL_DEPTHS = vox(np.arange(50.7, 305, 25.33))  # below surface for the cortical label (~50-300 um)
+MASK_SMOOTH_UM, MASK_OPEN_UM, TISSUE_SIGMA_UM, SURF_SMOOTH_UM = 38.0, 50.0, 152.0, 38.0
 
 
 def prepare(brain):
-    cache_pts = f"{C.CACHE}/{brain}_boundary.npy"
-    cache_norm = f"{C.CACHE}/{brain}_norm_f16.npy"
+    cache_pts = cache_path(brain, "boundary")
+    cache_norm = cache_path(brain, "norm_f16")
     if not (os.path.exists(cache_pts) and os.path.exists(cache_norm)):
-        v = np.load(f"{C.CACHE}/{brain}_lsfm25.npy").astype(np.float32)
+        v = np.load(cache_path(brain, "lsfm")).astype(np.float32)
         frame = v > 0
         anno_idx = np.load(f"{C.CACHE}/{brain}_anno20_idx.npy", mmap_mode="r")
-        zf = np.array(v.shape) / np.array(anno_idx.shape)
-        inside = ndi.zoom(np.asarray(anno_idx), zf, order=0)[: v.shape[0], : v.shape[1], : v.shape[2]] > 0
-        sm = ndi.gaussian_filter(v, 1.5)
+        assert anno_idx.shape == v.shape, "volume and registered atlas must share the atlas grid (rerun load_cache.py)"
+        inside = np.asarray(anno_idx) > 0
+        sm = ndi.gaussian_filter(v, vox(MASK_SMOOTH_UM))
         t_in, t_out = np.median(sm[inside]), np.median(sm[frame & ~inside])
         mask = (sm > 0.5 * (t_in + t_out)) & frame
-        mask = ndi.binary_opening(mask, iterations=2)
+        del sm
+        mask = ndi.binary_opening(mask, iterations=int(round(vox(MASK_OPEN_UM))))
         lab, _ = ndi.label(mask)
         mask = ndi.binary_fill_holes(lab == (np.argmax(np.bincount(lab.ravel())[1:]) + 1))
+        del lab
         depth = ndi.distance_transform_edt(mask)
-        w = ndi.gaussian_filter(np.where(mask, v, 0), 6)
-        wn = ndi.gaussian_filter(mask.astype(np.float32), 6)
+        w = ndi.gaussian_filter(np.where(mask, v, 0), vox(TISSUE_SIGMA_UM))
+        wn = ndi.gaussian_filter(mask.astype(np.float32), vox(TISSUE_SIGMA_UM))
         norm = np.where(mask, v / np.maximum(w / np.maximum(wn, 1e-3), 1), 0)
         # written via temp files + rename, so a reader never sees a half-written cache
         for path, arr in ((cache_norm, norm.astype(np.float16)), (cache_pts, np.argwhere(mask & (depth <= 1.5)).astype(np.float32))):
@@ -79,7 +97,7 @@ def project(prep, roll=0.0, pitch=0.0):
     # Fill single-pixel holes, then smooth away voxel terracing.
     z = _nan_smooth(z, 1.0)
     z = np.where(visible | np.isfinite(z), z, np.nan)
-    z = _nan_smooth(z, 1.5)
+    z = _nan_smooth(z, vox(SURF_SMOOTH_UM))
     visible = np.isfinite(z)
 
     yy, xx = np.nonzero(visible)

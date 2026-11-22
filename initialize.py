@@ -30,23 +30,13 @@ import config as C  # noqa: E402
 import register as R  # noqa: E402
 import refine_local as RL  # noqa: E402
 import brain_axes  # noqa: E402
-import surface  # noqa: E402
 
 THETAS = np.arange(-180, 180, 6)            # in-plane rotation (deg), full circle
 
 
-def scale_range():
-    """Bounds on the overall scale, projection px (LSFM, surface.VOX_MM) -> widefield px. The camera magnification is
-    fixed, so with a calibrated widefield pixel only the clearing shrinkage is free (config.CLEARING_SCALE).
-    Unbounded, the fit inflates the scale (~1.45) and matches a few large vessels of the wrong hemisphere."""
-    if C.WF_PIXEL_UM is None:
-        return tuple(C.SCALE_RANGE_UNCALIBRATED)
-    lsfm_um = surface.VOX_MM * 1000
-    return tuple(lsfm_um / (c * C.WF_PIXEL_UM) for c in sorted(C.CLEARING_SCALE, reverse=True))
-
-
-SCALE_RANGE = scale_range()
-SCALES = np.arange(SCALE_RANGE[0], SCALE_RANGE[1] + 1e-6, 0.05)
+SCALE_RANGE = R.scale_range()
+# scales spaced by ~5% of the middle of the range (9 scales for the 0.63-0.95 range on the 20 um grid)
+SCALES = np.linspace(*SCALE_RANGE, int(round((SCALE_RANGE[1] - SCALE_RANGE[0]) / (0.05 * np.mean(SCALE_RANGE)))) + 1)
 RL.SCALE_RANGE = SCALE_RANGE                # bound in the refinement too (refine_local.penalty)
 PEAKS = 5                                   # translation peaks tried per rotation/scale
 KEEP = 4                                    # distinct coarse candidates refined per view
@@ -58,7 +48,7 @@ def coarse(job):
     fx = R.fixed_for(brain)
     M, Mm = e["ridge"] * e["mask"], e["mask"]
     F, Fm = R.blur(fx["ridge"], R.COARSE_SIGMA), fx["mask"]
-    Mb = R.blur(M, R.COARSE_SIGMA)
+    Mb = R.blur_m(M, R.COARSE_SIGMA)
     H, W = M.shape
     cm = (W / 2, H / 2)
     CH, CW = H + R.FIX_SHAPE[0], W + R.FIX_SHAPE[1]
@@ -97,13 +87,13 @@ def refine(c):
     A = np.array(c["A"])
     p = np.zeros(6)
     for sig in R.FINE_SIGMAS:
-        Fb, Mb = R.blur(F, sig), R.blur(M, sig)
+        Fb, Mb = R.blur(F, sig), R.blur_m(M, sig)
         def fun(q):
             Aq = R.compose(R.perturb(q, "affine"), A)
             return -R.score(Fb, Fm, Mb, Aq, Mm) + RL.penalty(q, "affine", A)
         p = minimize(fun, p, method="Powell", options=dict(xtol=1e-3, ftol=1e-5, maxiter=4000)).x
     Af = R.compose(R.perturb(p, "affine"), A)
-    ncc = R.score(R.blur(F, 1.2), Fm, R.blur(M, 1.2), Af, Mm)
+    ncc = R.score(R.blur(F, 1.2), Fm, R.blur_m(M, 1.2), Af, Mm)
     return dict(c, A=Af.tolist(), score=ncc, coverage=R.coverage(Fm, Mm, Af),
                 objective=ncc - c["prior_penalty"], decomposition=R.describe(Af))
 
